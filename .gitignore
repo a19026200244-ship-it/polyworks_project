@@ -27,7 +27,10 @@ Thumbs.db
 
 # Logs
 *.log
+logs/
+
+# Runtime data
+runtime_data/
 
 # PolyWorks temporary/generated files
 *.pwmacro
-

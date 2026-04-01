@@ -8,6 +8,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+# 这个模块可以简单理解成：
+# “专门负责替 Python 跟 PolyWorks 对话”。
+# 业务层不需要知道 COM 的细节，只需要调用这里提供的方法。
+
 try:
     import ctypes
     import comtypes
@@ -15,6 +19,8 @@ try:
 
     HAS_COM = True
 except ImportError:
+    # 不直接让程序崩掉，而是记录“当前不能使用 COM”。
+    # 这样界面仍然能打开，只是连接 PolyWorks 时会提示缺少依赖。
     HAS_COM = False
     ctypes = None
     comtypes = None
@@ -25,8 +31,10 @@ if HAS_COM:
     # 业务层只需要知道“连接”和“执行命令”，
     # 具体 COM 细节都收口在这里。
     class IIMCommandCenter(comtypes.IUnknown):
+        # `_iid_` 是 COM 接口的唯一标识。
         _iid_ = comtypes.GUID("{214c846e-fbfd-11d6-9394-00b0d0224d3a}")
         _methods_ = [
+            # 发送一条 PolyWorks 命令字符串，让 PolyWorks 执行。
             comtypes.COMMETHOD(
                 [],
                 ctypes.HRESULT,
@@ -34,6 +42,7 @@ if HAS_COM:
                 (["in"], ctypes.c_wchar_p, "command"),
                 (["out", "retval"], ctypes.POINTER(ctypes.c_long), "return_value"),
             ),
+            # 根据返回码，拿失败或成功的文字说明。
             comtypes.COMMETHOD(
                 [],
                 ctypes.HRESULT,
@@ -41,6 +50,7 @@ if HAS_COM:
                 (["in"], ctypes.c_long, "return_code"),
                 (["out", "retval"], ctypes.POINTER(comtypes.BSTR), "message"),
             ),
+            # 根据返回码，判断命令是否执行成功。
             comtypes.COMMETHOD(
                 [],
                 ctypes.HRESULT,
@@ -91,7 +101,8 @@ class PolyWorksConnector:
     PROG_ID = "InnovMetric.PolyWorks.IMInspect"
 
     def __init__(self) -> None:
-        # 这些对象会在 connect() 后由 COM 返回
+        # 这些对象会在 connect() 后由 COM 返回。
+        # 刚创建实例时，它们都还是空的。
         self.inspect_obj = None
         self.iim_inspect = None
         self.project = None
@@ -109,18 +120,24 @@ class PolyWorksConnector:
             raise RuntimeError("缺少 comtypes，请先运行: pip install comtypes")
 
         # 初始化当前线程的 COM 环境。
+        # 这是很多 Windows COM 调用在开始前都要做的准备动作。
         comtypes.CoInitialize()
 
         try:
             # 优先附着到已经打开的 Inspector 会话。
+            # 这样用户如果先手动打开了 PolyWorks，Python 可以直接接上去。
             self.inspect_obj = comtypes.client.GetActiveObject(self.PROG_ID)
         except Exception:
             try:
+                # 如果没有现成会话，就尝试新建一个 PolyWorks COM 对象。
                 self.inspect_obj = comtypes.client.CreateObject(self.PROG_ID)
             except Exception as exc:
                 raise RuntimeError(f"无法连接到 PolyWorks Inspector: {exc}") from exc
 
-        # 下面这几步是在 COM 对象里拿到真正可调用的 Inspector 接口。
+        # 下面这几步是在 COM 对象里一层层拿到真正能用的接口：
+        # 1. Inspector 接口
+        # 2. 当前工程
+        # 3. 命令中心
         self.iim_inspect = self.inspect_obj.QueryInterface(IIMInspect)
         self.project = self.iim_inspect.ProjectGetCurrent()
         self.cmd_center = self.project.CommandCenterCreate()
@@ -135,6 +152,8 @@ class PolyWorksConnector:
         if not self.connected:
             raise RuntimeError("尚未连接到 PolyWorks")
 
+        # CommandExecute 返回的是一个“结果码”，
+        # 不是最终的几何数值。
         result = self.cmd_center.CommandExecute(command)
         is_success = self.cmd_center.ReturnValueIsSuccess(result)
 
@@ -146,6 +165,7 @@ class PolyWorksConnector:
 
     def execute_macro(self, macro_path: str | Path) -> None:
         """执行一个临时生成的 PolyWorks 宏文件。"""
+        # `as_posix()` 会把路径转成更适合写进宏命令的格式。
         self.execute_command(f'MACRO EXEC ( "{Path(macro_path).as_posix()}" )')
 
     def execute_commands(self, commands: list[str]) -> None:
@@ -177,6 +197,7 @@ class PolyWorksConnector:
 
     def disconnect(self) -> None:
         """断开 COM 连接，释放相关对象。"""
+        # 这里的清空动作，等价于把当前连接状态重置回“未连接”。
         self.cmd_center = None
         self.project = None
         self.iim_inspect = None

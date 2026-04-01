@@ -8,19 +8,6 @@
 ![Platform](https://img.shields.io/badge/Platform-Windows-0078D6?logo=windows&logoColor=white)
 ![COM](https://img.shields.io/badge/Communication-COM-6A1B9A)
 
-<pre>
-         _______
-        / _____ \
-       / /     \ \
-      /_/  O    \_\
-          /|\
-     ____/ | \____
-    /____  |  ____\
-         / / \
-        /_/   \_
-
-   Robot Arm + PolyWorks + Python
-</pre>
 
 一个面向机械臂测量场景的桌面工具，用 Python 图形界面连接 PolyWorks Inspector，完成点导入、几何构造、结果回读与展示。
 

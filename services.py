@@ -28,11 +28,14 @@ from config import (
 from polyworks_com import PolyWorksConnector
 from result_types import CircleFitResult, LineResult
 
+# 项目里统一把一个三维点表示为 `(x, y, z)`。
 Point3D = tuple[float, float, float]
 
 
 def validate_points(points: list[Point3D]) -> None:
     """校验“三平面交点”功能是否给了 9 个点。"""
+    # 三平面交点是固定格式：
+    # 顶部 3 点 + 正面 3 点 + 侧面 3 点 = 9 点
     if len(points) != EXPECTED_POINT_COUNT:
         raise ValueError(f"需要 {EXPECTED_POINT_COUNT} 个点，实际为 {len(points)} 个")
 
@@ -48,6 +51,7 @@ def _build_create_point_commands(points: list[Point3D]) -> list[str]:
     commands: list[str] = []
     for index, (x, y, z) in enumerate(points, start=1):
         point_name = POINT_NAME_TEMPLATE.format(index=index)
+        # 这里只是先拼出命令字符串，还没有真正执行。
         commands.append(
             f'FEATURE PRIMITIVE POINT CREATE ( {x}, {y}, {z}, "Nominal", "{point_name}", )'
         )
@@ -58,6 +62,7 @@ def _build_plane_commands() -> list[str]:
     """生成“三平面交点”里 3 个平面的创建命令。"""
     commands: list[str] = []
     for plane_index, plane_name in enumerate(PLANE_NAMES):
+        # 每个平面固定使用连续的 3 个点。
         start_index = plane_index * 3 + 1
         commands.append('TREEVIEW OBJECT SELECT NONE')
         for point_index in range(start_index, start_index + 3):
@@ -69,6 +74,8 @@ def _build_plane_commands() -> list[str]:
 
 def _build_intersection_commands() -> list[str]:
     """生成“三平面交点”里求交点的命令。"""
+    # 流程就是：
+    # 清空选择 -> 选中 3 个平面 -> 求三平面交点
     commands = ['TREEVIEW OBJECT SELECT NONE']
     for plane_name in PLANE_NAMES:
         commands.append(f'TREEVIEW OBJECT SELECT ( "{plane_name}", "On" )')
@@ -93,11 +100,13 @@ def _build_axes_from_normal(normal: Point3D) -> tuple[Point3D, Point3D]:
     这些方向主要是为了补全 `CircleFitResult` 里的 `axis_u / axis_v`，
     方便后续如果你要在界面或机器人逻辑里继续使用圆的局部坐标系。
     """
+    # 先把法向量归一化，避免长度影响后面的方向计算。
     nx, ny, nz = _normalize(normal)
 
     # 先挑一个不太平行的参考向量，避免叉积结果太接近 0。
     reference = (1.0, 0.0, 0.0) if abs(nx) < 0.9 else (0.0, 1.0, 0.0)
 
+    # 这里是在手动做叉积运算，目的是从法向量推出平面内的一个方向。
     ux = ny * reference[2] - nz * reference[1]
     uy = nz * reference[0] - nx * reference[2]
     uz = nx * reference[1] - ny * reference[0]
@@ -117,6 +126,8 @@ def _read_numbers_from_file(result_file: Path, expected_count: int) -> list[floa
     if not result_file.exists():
         raise RuntimeError("未找到结果文件，PolyWorks 可能没有成功导出结果")
 
+    # 结果文件内容一般会长这样：
+    # 1.0,2.0,3.0
     content = result_file.read_text(encoding='utf-8').strip()
     parts = [float(value.strip()) for value in content.split(',') if value.strip()]
     if len(parts) < expected_count:
@@ -138,6 +149,7 @@ class MeasurementService:
         result_file: Path = RESULT_FILE,
         temp_macro_file: Path = TEMP_MACRO_FILE,
     ) -> None:
+        # connector 是业务层和 PolyWorks 之间的桥梁。
         self.connector = connector
         self.result_file = Path(result_file)
         self.temp_macro_file = Path(temp_macro_file)
@@ -149,11 +161,13 @@ class MeasurementService:
 
     def _make_unique_token(self) -> str:
         """生成唯一后缀，避免本次创建的对象和旧对象重名。"""
+        # 用时间戳生成唯一后缀，是最简单稳定的方式。
         return datetime.now().strftime('%Y%m%d_%H%M%S_%f')
 
     def _make_temp_paths(self, tag: str) -> tuple[Path, Path]:
         """为一次宏执行生成独立的临时文件路径。"""
         token = self._make_unique_token()
+        # `with_name(...)` 表示“目录不变，只替换文件名”。
         result_file = self.result_file.with_name(
             f'{self.result_file.stem}_{tag}_{token}{self.result_file.suffix}'
         )
@@ -181,11 +195,14 @@ class MeasurementService:
         """
         result_file, macro_file = self._make_temp_paths(tag)
 
+        # 宏文件内容是临时拼出来的：
+        # 前面是版本和具体命令，后面是导出结果到文本文件。
         macro_lines = ['VERSION "6.0"', *body_lines]
         macro_lines.append(f'DATA_FILE CREATE ( "{result_file.as_posix()}" )')
         macro_lines.append(f'DATA_FILE APPEND ( "{result_file.as_posix()}", "{value_expression}" )')
         macro_content = '\n'.join(macro_lines)
 
+        # PolyWorks 宏文件通常用 UTF-16 写入更稳。
         macro_file.write_text(macro_content, encoding='utf-16')
         try:
             self.connector.execute_macro(macro_file)
@@ -201,6 +218,7 @@ class MeasurementService:
         """把输入坐标创建成 PolyWorks 点特征。"""
         point_names: list[str] = []
         for index, point in enumerate(points, start=1):
+            # 给每个点加上唯一前缀，避免多次测量时重名。
             point_name = f'{prefix}_点{index}'
             self.connector.create_point(point, point_name)
             point_names.append(point_name)
@@ -208,12 +226,16 @@ class MeasurementService:
 
     def _select_objects(self, object_names: list[str]) -> None:
         """按名字批量选择对象。"""
+        # PolyWorks 的很多命令都依赖“当前选中了什么对象”，
+        # 所以这里统一先清空，再逐个选中。
         self.connector.select_none()
         for object_name in object_names:
             self.connector.select_object(object_name)
 
     def _read_point_feature(self, feature_name: str) -> Point3D:
         """读取点特征的坐标。"""
+        # 这里读值不是直接从 COM 返回三维点，
+        # 而是通过“执行宏再读回文本”的方式间接拿结果。
         numbers = self._run_macro_and_read_numbers(
             tag='point',
             body_lines=[
@@ -252,6 +274,7 @@ class MeasurementService:
             value_expression='$center_x,$center_y,$center_z,$radius,$axis_i,$axis_j,$axis_k',
         )
 
+        # 数值顺序和 `value_expression` 里的拼接顺序保持一致。
         center = (numbers[0], numbers[1], numbers[2])
         radius = numbers[3]
         normal = (numbers[4], numbers[5], numbers[6])
@@ -296,6 +319,7 @@ class MeasurementService:
         self._require_connected()
         validate_points(points)
 
+        # 这 4 步就是“三平面交点”的完整业务链路。
         # 1. 创建 9 个输入点
         self.connector.execute_commands(_build_create_point_commands(points))
 
@@ -324,6 +348,7 @@ class MeasurementService:
         self._require_connected()
         _validate_min_points(points, MIN_POINTS_FOR_CIRCLE, '拟合圆')
 
+        # 每次测量都生成一套新名字，避免 PolyWorks 里对象冲突。
         token = self._make_unique_token()
         point_prefix = f'拟合圆输入_{token}'
         circle_name = f'拟合圆_{token}'
@@ -331,6 +356,7 @@ class MeasurementService:
         point_names = self._create_feature_points(points, point_prefix)
 
         # `FROM_CENTER_POINTS` 会对当前选中的点特征做最佳拟合圆。
+        # 所以前面必须先正确选中这一批点。
         self._select_objects(point_names)
         self.connector.execute_command(
             f'FEATURE PRIMITIVE CIRCLE FROM_CENTER_POINTS ( "{circle_name}", )'
@@ -348,6 +374,7 @@ class MeasurementService:
         _validate_min_points(plane1_points, MIN_POINTS_FOR_PLANE, '平面 1')
         _validate_min_points(plane2_points, MIN_POINTS_FOR_PLANE, '平面 2')
 
+        # 同样通过唯一名字避免对象重名。
         token = self._make_unique_token()
         plane1_point_names = self._create_feature_points(plane1_points, f'交线平面1输入_{token}')
         plane2_point_names = self._create_feature_points(plane2_points, f'交线平面2输入_{token}')
