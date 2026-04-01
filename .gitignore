@@ -1,0 +1,33 @@
+# Python cache and compiled files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging artifacts
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# IDE and editor settings
+.vscode/
+.idea/
+.claude/
+
+# OS files
+Thumbs.db
+.DS_Store
+
+# Logs
+*.log
+
+# PolyWorks temporary/generated files
+*.pwmacro
+
