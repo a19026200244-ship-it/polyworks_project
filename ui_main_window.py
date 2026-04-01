@@ -1,0 +1,583 @@
+﻿"""主窗口界面。
+
+界面层只关心三件事：
+1. 把按钮、表格、日志这些控件摆出来
+2. 接收用户操作
+3. 调用业务层并显示结果
+
+可以把它理解成“界面调度中心”：
+- 它自己不做复杂几何计算
+- 它主要负责组织流程、更新状态、展示结果
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
+from PySide6.QtWidgets import (
+    QApplication,
+    QFileDialog,
+    QFrame,
+    QGridLayout,
+    QGroupBox,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QMainWindow,
+    QMessageBox,
+    QPushButton,
+    QTabWidget,
+    QTableWidget,
+    QTableWidgetItem,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from config import (
+    EXPECTED_POINT_COUNT,
+    POINT_GROUP_COLORS,
+    POINT_GROUPS,
+    WINDOW_MIN_HEIGHT,
+    WINDOW_MIN_WIDTH,
+    WINDOW_TITLE,
+)
+from data_parser import parse_points_file, parse_points_text
+from polyworks_com import HAS_COM, PolyWorksConnector
+from services import MeasurementService, validate_points
+
+
+class MainWindow(QMainWindow):
+    """程序主窗口。
+
+    窗口里包含三个核心功能页：
+    1. 三平面交点
+    2. 多点拟合圆
+    3. 两面交线
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        # connector 负责和 PolyWorks Inspector 建立连接。
+        self.connector = PolyWorksConnector()
+        # service 负责业务流程，界面层只需要调用它提供的方法。
+        self.measurement_service = MeasurementService(self.connector)
+        # 这里保存“三平面交点”功能加载得到的 9 个点。
+        self.points: list[tuple[float, float, float]] = []
+        self._init_ui()
+
+    def _init_ui(self) -> None:
+        """创建主界面布局和控件。"""
+        self.setWindowTitle(WINDOW_TITLE)
+        self.setMinimumSize(WINDOW_MIN_WIDTH, WINDOW_MIN_HEIGHT)
+
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+
+        root_layout = QVBoxLayout(central_widget)
+        root_layout.setSpacing(10)
+        root_layout.setContentsMargins(15, 15, 15, 15)
+
+        root_layout.addWidget(self._build_connection_group())
+
+        # 三个标签页分别承载三个不同的测量功能。
+        self.tabs = QTabWidget()
+        self.tabs.addTab(self._build_intersection_tab(), '三平面交点')
+        self.tabs.addTab(self._build_circle_tab(), '拟合圆')
+        self.tabs.addTab(self._build_line_tab(), '两面交线')
+        root_layout.addWidget(self.tabs)
+
+        root_layout.addWidget(self._build_log_group())
+
+        self.statusBar().showMessage('就绪')
+        self._log('程序启动完成')
+        if not HAS_COM:
+            self._log('警告: 未检测到 comtypes，请先运行 pip install comtypes')
+        self._update_action_buttons()
+
+    def _build_connection_group(self) -> QGroupBox:
+        """创建 PolyWorks 连接区域。"""
+        group = QGroupBox('PolyWorks 连接')
+        layout = QHBoxLayout(group)
+
+        self.lbl_status = QLabel('● 未连接')
+        self.lbl_status.setStyleSheet('color: red; font-weight: bold;')
+        layout.addWidget(self.lbl_status)
+        layout.addStretch()
+
+        self.btn_connect = QPushButton('连接 PolyWorks')
+        self.btn_connect.setFixedWidth(150)
+        self.btn_connect.clicked.connect(self._on_connect)
+        layout.addWidget(self.btn_connect)
+
+        self.btn_disconnect = QPushButton('断开连接')
+        self.btn_disconnect.setFixedWidth(100)
+        self.btn_disconnect.setEnabled(False)
+        self.btn_disconnect.clicked.connect(self._on_disconnect)
+        layout.addWidget(self.btn_disconnect)
+
+        return group
+
+    def _build_intersection_tab(self) -> QWidget:
+        """创建“三平面交点”页面。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.addWidget(self._build_file_group())
+        layout.addWidget(self._build_points_group())
+        layout.addWidget(self._build_intersection_button())
+        layout.addWidget(self._build_intersection_result_group())
+        return page
+
+    def _build_circle_tab(self) -> QWidget:
+        """创建“拟合圆”页面。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        input_group = QGroupBox('输入圆上的点（至少 3 个）')
+        input_layout = QVBoxLayout(input_group)
+        input_layout.addWidget(QLabel('每行一个点，格式支持: x,y,z 或 x y z'))
+
+        self.circle_text = QTextEdit()
+        self.circle_text.setPlaceholderText('示例:\n10,0,0\n0,10,0\n-10,0,0\n0,-10,0')
+        self.circle_text.setMaximumHeight(220)
+        input_layout.addWidget(self.circle_text)
+
+        # 这一行专门放“加载点”和“开始计算”两个操作按钮。
+        circle_btn_row = QHBoxLayout()
+        btn_load_circle = QPushButton('从文件加载点')
+        btn_load_circle.clicked.connect(lambda: self._load_points_to_text_edit(self.circle_text))
+        circle_btn_row.addWidget(btn_load_circle)
+        circle_btn_row.addStretch()
+
+        self.btn_circle = QPushButton('计算拟合圆')
+        self.btn_circle.setEnabled(False)
+        self.btn_circle.clicked.connect(self._on_fit_circle)
+        circle_btn_row.addWidget(self.btn_circle)
+        input_layout.addLayout(circle_btn_row)
+        layout.addWidget(input_group)
+
+        result_group = QGroupBox('拟合圆结果')
+        result_layout = QGridLayout(result_group)
+        self.circle_result_labels = self._create_value_labels(
+            result_layout,
+            ['圆心 X', '圆心 Y', '圆心 Z', '直径', '法向量 X', '法向量 Y', '法向量 Z'],
+        )
+        layout.addWidget(result_group)
+        layout.addStretch()
+        return page
+
+    def _build_line_tab(self) -> QWidget:
+        """创建“两面交线”页面。"""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        input_group = QGroupBox('输入两个平面的点')
+        input_layout = QHBoxLayout(input_group)
+
+        # 左右两列分别输入两个平面的点集。
+        plane1_group = QVBoxLayout()
+        plane1_group.addWidget(QLabel('平面 1 点集（至少 3 个）'))
+        self.line_plane1_text = QTextEdit()
+        self.line_plane1_text.setPlaceholderText('示例:\n0,0,0\n10,0,0\n0,10,0')
+        plane1_group.addWidget(self.line_plane1_text)
+        btn_load_plane1 = QPushButton('加载平面 1 文件')
+        btn_load_plane1.clicked.connect(lambda: self._load_points_to_text_edit(self.line_plane1_text))
+        plane1_group.addWidget(btn_load_plane1)
+        input_layout.addLayout(plane1_group)
+
+        plane2_group = QVBoxLayout()
+        plane2_group.addWidget(QLabel('平面 2 点集（至少 3 个）'))
+        self.line_plane2_text = QTextEdit()
+        self.line_plane2_text.setPlaceholderText('示例:\n0,0,0\n0,10,0\n0,0,10')
+        plane2_group.addWidget(self.line_plane2_text)
+        btn_load_plane2 = QPushButton('加载平面 2 文件')
+        btn_load_plane2.clicked.connect(lambda: self._load_points_to_text_edit(self.line_plane2_text))
+        plane2_group.addWidget(btn_load_plane2)
+        input_layout.addLayout(plane2_group)
+
+        layout.addWidget(input_group)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        self.btn_line = QPushButton('计算两面交线')
+        self.btn_line.setEnabled(False)
+        self.btn_line.clicked.connect(self._on_intersect_planes)
+        btn_row.addWidget(self.btn_line)
+        layout.addLayout(btn_row)
+
+        result_group = QGroupBox('两面交线结果')
+        result_layout = QGridLayout(result_group)
+        self.line_result_labels = self._create_value_labels(
+            result_layout,
+            ['线上点 X', '线上点 Y', '线上点 Z', '方向 X', '方向 Y', '方向 Z'],
+        )
+        layout.addWidget(result_group)
+        layout.addStretch()
+        return page
+
+    def _build_file_group(self) -> QGroupBox:
+        """创建三平面交点功能的文件选择区域。"""
+        group = QGroupBox('文件选择')
+        layout = QHBoxLayout(group)
+        layout.addWidget(QLabel('坐标文件:'))
+
+        self.lbl_file = QLabel('未选择')
+        self.lbl_file.setStyleSheet('color: gray;')
+        layout.addWidget(self.lbl_file, 1)
+
+        btn_load = QPushButton('加载坐标文件')
+        btn_load.clicked.connect(self._on_load_file)
+        layout.addWidget(btn_load)
+
+        return group
+
+    def _build_points_group(self) -> QGroupBox:
+        """创建三平面交点功能的点表格区域。"""
+        group = QGroupBox('测量点坐标（3 组 x 3 点 = 9 个点）')
+        layout = QVBoxLayout(group)
+
+        self.table = QTableWidget(EXPECTED_POINT_COUNT, 4)
+        self.table.setHorizontalHeaderLabels(['点名', 'X', 'Y', 'Z'])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setAlternatingRowColors(True)
+        self.table.setMaximumHeight(280)
+        layout.addWidget(self.table)
+
+        # 这里强调 9 个点的分组顺序，避免导入时顺序放错。
+        info = QLabel('顶部: 点 1-3  |  正面: 点 4-6  |  侧面: 点 7-9')
+        info.setStyleSheet('color: #666; font-size: 11px;')
+        info.setAlignment(Qt.AlignCenter)
+        layout.addWidget(info)
+
+        return group
+
+    def _build_intersection_button(self) -> QPushButton:
+        """创建三平面交点的执行按钮。"""
+        self.btn_exec = QPushButton('执行计算（建立平面并求交点）')
+        self.btn_exec.setFixedHeight(45)
+        self.btn_exec.setStyleSheet(
+            'QPushButton { background-color: #0078d4; color: white; '
+            'font-size: 14px; font-weight: bold; border: none; border-radius: 5px; }'
+            'QPushButton:hover { background-color: #106ebe; }'
+            'QPushButton:pressed { background-color: #005a9e; }'
+            'QPushButton:disabled { background-color: #ccc; color: #888; }'
+        )
+        self.btn_exec.setEnabled(False)
+        self.btn_exec.clicked.connect(self._on_execute)
+        return self.btn_exec
+
+    def _build_intersection_result_group(self) -> QGroupBox:
+        """创建三平面交点结果显示区域。"""
+        group = QGroupBox('计算结果 - 三平面交点')
+        layout = QVBoxLayout(group)
+        coords_layout = QHBoxLayout()
+
+        self.result_labels: dict[str, QLabel] = {}
+        for axis in ('X', 'Y', 'Z'):
+            frame = QFrame()
+            frame.setFrameStyle(QFrame.StyledPanel)
+            frame.setStyleSheet('background-color: #f5f5f5; border-radius: 5px; padding: 10px;')
+
+            frame_layout = QVBoxLayout(frame)
+            axis_label = QLabel(axis)
+            axis_label.setAlignment(Qt.AlignCenter)
+            axis_label.setStyleSheet('font-size: 14px; font-weight: bold; color: #0078d4;')
+            frame_layout.addWidget(axis_label)
+
+            value_label = QLabel('--')
+            value_label.setAlignment(Qt.AlignCenter)
+            value_label.setStyleSheet('font-size: 18px; font-weight: bold;')
+            frame_layout.addWidget(value_label)
+
+            self.result_labels[axis] = value_label
+            coords_layout.addWidget(frame)
+
+        layout.addLayout(coords_layout)
+        return group
+
+    def _build_log_group(self) -> QGroupBox:
+        """创建日志显示区域。"""
+        group = QGroupBox('运行日志')
+        layout = QVBoxLayout(group)
+
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(160)
+        self.log_text.setStyleSheet('font-family: Consolas, monospace; font-size: 11px;')
+        layout.addWidget(self.log_text)
+
+        return group
+
+    def _create_value_labels(self, layout: QGridLayout, titles: list[str]) -> dict[str, QLabel]:
+        """批量创建结果显示标签。
+
+        拟合圆和两面交线的结果展示形式很像，
+        所以抽出这个公共方法，减少重复代码。
+        """
+        labels: dict[str, QLabel] = {}
+        for index, title in enumerate(titles):
+            row = index // 2
+            column = (index % 2) * 2
+            title_label = QLabel(f'{title}:')
+            value_label = QLabel('--')
+            value_label.setStyleSheet('font-weight: bold; color: #0078d4;')
+            layout.addWidget(title_label, row, column)
+            layout.addWidget(value_label, row, column + 1)
+            labels[title] = value_label
+        return labels
+
+    def _log(self, message: str) -> None:
+        """向界面日志区域追加一条消息。"""
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        self.log_text.append(f'[{timestamp}] {message}')
+        QApplication.processEvents()
+
+    def _update_action_buttons(self) -> None:
+        """根据连接状态刷新三个功能按钮。
+
+        统一把“按钮能不能点”的判断放在这里管理：
+        - 三平面交点：要求已连接，并且已经加载 9 个点
+        - 拟合圆：要求已连接
+        - 两面交线：要求已连接
+        """
+        self.btn_exec.setEnabled(self.connector.connected and len(self.points) == EXPECTED_POINT_COUNT)
+        self.btn_circle.setEnabled(self.connector.connected)
+        self.btn_line.setEnabled(self.connector.connected)
+
+    def _set_connection_status(self, connected: bool) -> None:
+        """统一更新连接状态显示。"""
+        if connected:
+            self.lbl_status.setText('● 已连接')
+            self.lbl_status.setStyleSheet('color: green; font-weight: bold;')
+            self.btn_connect.setEnabled(False)
+            self.btn_disconnect.setEnabled(True)
+            self.statusBar().showMessage('已连接')
+        else:
+            self.lbl_status.setText('● 未连接')
+            self.lbl_status.setStyleSheet('color: red; font-weight: bold;')
+            self.btn_connect.setEnabled(True)
+            self.btn_disconnect.setEnabled(False)
+            self.statusBar().showMessage('已断开')
+
+    def _clear_result_labels(self, labels: dict[str, QLabel], text: str) -> None:
+        """把一组结果标签统一清空或改成同一个提示文本。"""
+        for label in labels.values():
+            label.setText(text)
+
+    def _fill_points_table(self) -> None:
+        """把已经读取的 9 个点显示到表格里。
+
+        不同平面会使用不同背景色，便于用户快速识别点分组。
+        """
+        for row_index, (x, y, z) in enumerate(self.points):
+            group_name = POINT_GROUPS[row_index]
+            background = QColor(*POINT_GROUP_COLORS[group_name])
+            row_data = [
+                f'点 {row_index + 1} ({group_name})',
+                f'{x:.4f}',
+                f'{y:.4f}',
+                f'{z:.4f}',
+            ]
+
+            for column_index, text in enumerate(row_data):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter)
+                item.setBackground(background)
+                self.table.setItem(row_index, column_index, item)
+
+    def _load_points_to_text_edit(self, editor: QTextEdit) -> None:
+        """把文件中的点坐标加载到某个文本框里。
+
+        这个方法给“拟合圆”和“两面交线”两个页面复用。
+        读到文件后，会转成统一的 `x,y,z` 文本格式写入文本框。
+        """
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            '选择坐标文件',
+            '',
+            '文本文件 (*.txt);;所有文件 (*)',
+        )
+        if not filepath:
+            return
+
+        try:
+            points = parse_points_file(filepath)
+            lines = [f'{x},{y},{z}' for x, y, z in points]
+            editor.setPlainText('\n'.join(lines))
+            self._log(f'已加载文本点集: {filepath}')
+        except Exception as exc:
+            self._log(f'加载文本点集失败: {exc}')
+            QMessageBox.warning(self, '加载失败', str(exc))
+
+    def _on_connect(self) -> None:
+        """处理“连接 PolyWorks”按钮。"""
+        try:
+            self._log('正在连接 PolyWorks Inspector...')
+            self.connector.connect()
+            self._set_connection_status(True)
+            self._update_action_buttons()
+            self._log('成功连接到 PolyWorks Inspector')
+        except Exception as exc:
+            self._log(f'连接失败: {exc}')
+            QMessageBox.critical(self, '连接失败', str(exc))
+
+    def _on_disconnect(self) -> None:
+        """处理“断开连接”按钮。"""
+        self.connector.disconnect()
+        self._set_connection_status(False)
+        self._update_action_buttons()
+        self._log('已断开连接')
+
+    def _on_load_file(self) -> None:
+        """处理三平面交点页面里的文件加载动作。"""
+        filepath, _ = QFileDialog.getOpenFileName(
+            self,
+            '选择坐标文件',
+            '',
+            '文本文件 (*.txt);;所有文件 (*)',
+        )
+        if not filepath:
+            return
+
+        try:
+            points = parse_points_file(filepath)
+            validate_points(points)
+            self.points = points
+            self.lbl_file.setText(filepath)
+            self.lbl_file.setStyleSheet('color: black;')
+            self._fill_points_table()
+            self._update_action_buttons()
+            self._log(f'已加载 {len(self.points)} 个坐标点: {filepath}')
+        except Exception as exc:
+            self._log(f'加载失败: {exc}')
+            QMessageBox.warning(self, '加载失败', str(exc))
+
+    def _on_execute(self) -> None:
+        """执行三平面交点计算。
+
+        这个入口方法负责：
+        1. 检查是否已连接 PolyWorks
+        2. 检查是否已加载 9 个点
+        3. 调用业务层执行计算
+        4. 把结果显示到界面上
+        """
+        if not self.connector.connected:
+            QMessageBox.warning(self, '未连接', '请先连接 PolyWorks')
+            return
+
+        if len(self.points) != EXPECTED_POINT_COUNT:
+            QMessageBox.warning(self, '数据不足', '请先加载包含 9 个点的坐标文件')
+            return
+
+        self._clear_result_labels(self.result_labels, '计算中...')
+        self.btn_exec.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+
+        try:
+            self._log('开始执行三平面交点计算...')
+            x, y, z = self.measurement_service.run_measurement(self.points)
+            self.result_labels['X'].setText(f'{x:.6f}')
+            self.result_labels['Y'].setText(f'{y:.6f}')
+            self.result_labels['Z'].setText(f'{z:.6f}')
+            self._log(f'三平面交点完成: X={x:.6f}, Y={y:.6f}, Z={z:.6f}')
+            self.statusBar().showMessage('计算完成')
+        except Exception as exc:
+            self._clear_result_labels(self.result_labels, '错误')
+            self._log(f'执行出错: {exc}')
+            self.statusBar().showMessage('执行出错')
+            QMessageBox.critical(self, '执行出错', str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+            self.measurement_service.cleanup_result_file()
+            self._update_action_buttons()
+
+    def _on_fit_circle(self) -> None:
+        """执行多点拟合圆。
+
+        界面层只负责收集点文本和显示结果，
+        真正的几何构造与计算由业务层调用 PolyWorks 完成。
+        """
+        if not self.connector.connected:
+            QMessageBox.warning(self, '未连接', '请先连接 PolyWorks')
+            return
+
+        self._clear_result_labels(self.circle_result_labels, '计算中...')
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            points = parse_points_text(self.circle_text.toPlainText())
+            self._log(f'开始使用 PolyWorks 拟合圆，输入点数: {len(points)}')
+            result = self.measurement_service.fit_circle_from_points(points)
+
+            self.circle_result_labels['圆心 X'].setText(f'{result.center[0]:.6f}')
+            self.circle_result_labels['圆心 Y'].setText(f'{result.center[1]:.6f}')
+            self.circle_result_labels['圆心 Z'].setText(f'{result.center[2]:.6f}')
+            self.circle_result_labels['直径'].setText(f'{result.diameter:.6f}')
+            self.circle_result_labels['法向量 X'].setText(f'{result.normal[0]:.6f}')
+            self.circle_result_labels['法向量 Y'].setText(f'{result.normal[1]:.6f}')
+            self.circle_result_labels['法向量 Z'].setText(f'{result.normal[2]:.6f}')
+
+            self._log(
+                'PolyWorks 拟合圆完成: '
+                f'center=({result.center[0]:.6f}, {result.center[1]:.6f}, {result.center[2]:.6f}), '
+                f'diameter={result.diameter:.6f}, '
+                f'normal=({result.normal[0]:.6f}, {result.normal[1]:.6f}, {result.normal[2]:.6f})'
+            )
+            self.statusBar().showMessage('拟合圆完成')
+        except Exception as exc:
+            self._clear_result_labels(self.circle_result_labels, '错误')
+            self._log(f'拟合圆出错: {exc}')
+            QMessageBox.critical(self, '拟合圆出错', str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def _on_intersect_planes(self) -> None:
+        """执行两面交线计算。
+
+        用户输入两组点后，这里会调用业务层在 PolyWorks 中：
+        1. 分别构造两个最佳拟合平面
+        2. 再求两个平面的交线
+        """
+        if not self.connector.connected:
+            QMessageBox.warning(self, '未连接', '请先连接 PolyWorks')
+            return
+
+        self._clear_result_labels(self.line_result_labels, '计算中...')
+        QApplication.setOverrideCursor(Qt.WaitCursor)
+        try:
+            plane1_points = parse_points_text(self.line_plane1_text.toPlainText())
+            plane2_points = parse_points_text(self.line_plane2_text.toPlainText())
+            self._log(
+                '开始使用 PolyWorks 计算两面交线，'
+                f'平面1点数: {len(plane1_points)}，平面2点数: {len(plane2_points)}'
+            )
+            result = self.measurement_service.intersect_plane_groups(plane1_points, plane2_points)
+
+            self.line_result_labels['线上点 X'].setText(f'{result.point[0]:.6f}')
+            self.line_result_labels['线上点 Y'].setText(f'{result.point[1]:.6f}')
+            self.line_result_labels['线上点 Z'].setText(f'{result.point[2]:.6f}')
+            self.line_result_labels['方向 X'].setText(f'{result.direction[0]:.6f}')
+            self.line_result_labels['方向 Y'].setText(f'{result.direction[1]:.6f}')
+            self.line_result_labels['方向 Z'].setText(f'{result.direction[2]:.6f}')
+
+            self._log(
+                'PolyWorks 两面交线完成: '
+                f'point=({result.point[0]:.6f}, {result.point[1]:.6f}, {result.point[2]:.6f}), '
+                f'direction=({result.direction[0]:.6f}, {result.direction[1]:.6f}, {result.direction[2]:.6f})'
+            )
+            self.statusBar().showMessage('两面交线完成')
+        except Exception as exc:
+            self._clear_result_labels(self.line_result_labels, '错误')
+            self._log(f'两面交线出错: {exc}')
+            QMessageBox.critical(self, '两面交线出错', str(exc))
+        finally:
+            QApplication.restoreOverrideCursor()
+
+    def closeEvent(self, event) -> None:
+        """窗口关闭时，顺手断开 PolyWorks 连接。"""
+        if self.connector.connected:
+            self.connector.disconnect()
+        super().closeEvent(event)
+

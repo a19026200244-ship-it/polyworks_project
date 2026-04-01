@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"from polyworks_connector import parse_points_file, generate_macro, get_result_file_path; pts = parse_points_file\\(''测量.txt''\\); print\\(f''Loaded {len\\(pts\\)} points:''\\); [print\\(f''  Point {i+1}: {p}''\\) for i,p in enumerate\\(pts\\)]; macro = generate_macro\\(pts, get_result_file_path\\(\\)\\); print\\(f''\\\\nGenerated macro \\({len\\(macro.splitlines\\(\\)\\)} lines\\):''\\)\")"
+    ]
+  }
+}
