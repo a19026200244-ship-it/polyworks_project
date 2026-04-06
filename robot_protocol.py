@@ -1,10 +1,13 @@
 """机器人联动协议定义。
 
-阶段 1 协议约定：
+阶段 2 协议约定：
 1. 一行一条消息
 2. UTF-8 编码
-3. 使用 `TYPE;KEY=VALUE;KEY=VALUE` 格式
-4. 当前只支持 `TASK=CIRCLE`
+3. 消息格式为 `TYPE;KEY=VALUE;KEY=VALUE`
+4. 当前支持任务：
+   - CIRCLE
+   - LINE
+   - INTERSECTION3P
 """
 
 from __future__ import annotations
@@ -12,14 +15,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from exceptions import ProtocolError
-from result_types import CircleFitResult
+from result_types import CircleFitResult, LineResult
 
-SUPPORTED_TASKS = {"CIRCLE"}
+Point3D = tuple[float, float, float]
+
+SUPPORTED_TASKS = {"CIRCLE", "LINE", "INTERSECTION3P"}
 
 
 @dataclass(slots=True)
 class RobotMessage:
-    """解析后的机器人消息。"""
+    """解析后的机器人协议消息。"""
 
     message_type: str
     req: str
@@ -27,18 +32,18 @@ class RobotMessage:
     raw: str
 
     def get(self, key: str, default: str | None = None) -> str | None:
-        """按 key 获取字段值。"""
+        """按 key 读取字段值。"""
         return self.fields.get(key.upper(), default)
 
     def get_required(self, key: str) -> str:
-        """获取一个必填字段。"""
+        """读取一个必填字段。"""
         value = self.get(key)
         if value is None or value == "":
             raise ProtocolError(f"缺少字段 {key}")
         return value
 
     def get_int(self, key: str) -> int:
-        """把字段解析成整数。"""
+        """把字段解析为整数。"""
         value = self.get_required(key)
         try:
             return int(value)
@@ -46,7 +51,7 @@ class RobotMessage:
             raise ProtocolError(f"字段 {key} 不是有效整数: {value}") from exc
 
     def get_float(self, key: str) -> float:
-        """把字段解析成浮点数。"""
+        """把字段解析为浮点数。"""
         value = self.get_required(key)
         try:
             return float(value)
@@ -55,7 +60,7 @@ class RobotMessage:
 
 
 def parse_message(raw_message: str) -> RobotMessage:
-    """把原始文本解析为机器人消息。"""
+    """把原始文本解析为结构化协议消息。"""
     cleaned = raw_message.strip()
     if not cleaned:
         raise ProtocolError("收到空消息")
@@ -124,8 +129,43 @@ def build_circle_result(req: str, result: CircleFitResult, frame: str) -> str:
     )
 
 
+def build_line_result(req: str, result: LineResult, frame: str) -> str:
+    """构造两面交线结果消息。"""
+    return _serialize_message(
+        "RESULT",
+        [
+            ("REQ", req),
+            ("STATUS", "OK"),
+            ("TASK", "LINE"),
+            ("FRAME", frame),
+            ("PX", _format_number(result.point[0])),
+            ("PY", _format_number(result.point[1])),
+            ("PZ", _format_number(result.point[2])),
+            ("DX", _format_number(result.direction[0])),
+            ("DY", _format_number(result.direction[1])),
+            ("DZ", _format_number(result.direction[2])),
+        ],
+    )
+
+
+def build_intersection3p_result(req: str, point: Point3D, frame: str) -> str:
+    """构造三平面交点结果消息。"""
+    return _serialize_message(
+        "RESULT",
+        [
+            ("REQ", req),
+            ("STATUS", "OK"),
+            ("TASK", "INTERSECTION3P"),
+            ("FRAME", frame),
+            ("PX", _format_number(point[0])),
+            ("PY", _format_number(point[1])),
+            ("PZ", _format_number(point[2])),
+        ],
+    )
+
+
 def _validate_message(message: RobotMessage) -> None:
-    """校验消息格式和阶段 1 的协议约束。"""
+    """校验协议消息的基础格式。"""
     message.get_required("REQ")
 
     if message.message_type == "HELLO":
@@ -137,16 +177,34 @@ def _validate_message(message: RobotMessage) -> None:
         task = message.get_required("TASK").upper()
         if task not in SUPPORTED_TASKS:
             raise ProtocolError(f"当前不支持的任务类型: {task}")
-        points = message.get_int("POINTS")
-        if points <= 0:
-            raise ProtocolError("POINTS 必须大于 0")
+
         message.get_required("FRAME")
+        if task == "CIRCLE":
+            points = message.get_int("POINTS")
+            if points <= 0:
+                raise ProtocolError("POINTS 必须大于 0")
+            return
+
+        if task == "LINE":
+            p1 = message.get_int("P1")
+            p2 = message.get_int("P2")
+            if p1 <= 0 or p2 <= 0:
+                raise ProtocolError("LINE 任务的 P1/P2 必须大于 0")
+            return
+
+        p1 = _parse_optional_int(message, "P1", 3)
+        p2 = _parse_optional_int(message, "P2", 3)
+        p3 = _parse_optional_int(message, "P3", 3)
+        if p1 <= 0 or p2 <= 0 or p3 <= 0:
+            raise ProtocolError("INTERSECTION3P 任务的 P1/P2/P3 必须大于 0")
         return
 
     if message.message_type == "POINT":
         idx = message.get_int("IDX")
         if idx <= 0:
             raise ProtocolError("IDX 必须从 1 开始")
+        if "GROUP" in message.fields and not message.get_required("GROUP").strip():
+            raise ProtocolError("GROUP 不能为空")
         message.get_float("X")
         message.get_float("Y")
         message.get_float("Z")
@@ -159,7 +217,7 @@ def _validate_message(message: RobotMessage) -> None:
 
 
 def _serialize_message(message_type: str, ordered_fields: list[tuple[str, str | int | float]]) -> str:
-    """把消息类型和字段序列化为一行文本。"""
+    """把消息类型和字段列表序列化为一行文本。"""
     segments = [message_type.upper()]
     for key, value in ordered_fields:
         segments.append(f"{key}={value}")
@@ -169,3 +227,14 @@ def _serialize_message(message_type: str, ordered_fields: list[tuple[str, str | 
 def _format_number(value: float) -> str:
     """统一数值输出格式。"""
     return f"{value:.6f}"
+
+
+def _parse_optional_int(message: RobotMessage, key: str, default: int) -> int:
+    """读取可选整数，没有时返回默认值。"""
+    value = message.get(key)
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ProtocolError(f"字段 {key} 不是有效整数: {value}") from exc

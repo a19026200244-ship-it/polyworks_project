@@ -12,9 +12,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime
+import threading
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QObject, QTimer, Qt, Signal, Slot
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
@@ -37,10 +39,12 @@ from PySide6.QtWidgets import (
 )
 
 from app_logger import get_logger
+from calibration_service import HAS_NUMPY
 from config import (
     EXPECTED_POINT_COUNT,
     POINT_GROUP_COLORS,
     POINT_GROUPS,
+    ROBOT_MAIN_THREAD_TASK_TIMEOUT,
     WINDOW_MIN_HEIGHT,
     WINDOW_MIN_WIDTH,
     WINDOW_TITLE,
@@ -50,10 +54,57 @@ from exceptions import AppError
 from measurement_controller import MeasurementController
 from polyworks_com import HAS_COM
 from services import validate_points
+from ui_calibration_tab import CalibrationTab
 from ui_robot_link_tab import RobotLinkTab
 
 # 这个文件适合从“用户操作流程”的角度去理解：
 # 用户点按钮 -> 对应的 `_on_xxx()` 被触发 -> 调用业务层 -> 更新界面结果。
+
+
+class _MainThreadTask:
+    """保存一次主线程任务的执行结果。"""
+
+    def __init__(self, callback: Callable[[], object]) -> None:
+        self.callback = callback
+        self.done = threading.Event()
+        self.result: object | None = None
+        self.error: Exception | None = None
+
+
+class _MainThreadExecutor(QObject):
+    """把后台线程提交的任务切回 Qt 主线程执行。"""
+
+    execute_requested = Signal(object)
+
+    def __init__(self, timeout_seconds: float, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._timeout_seconds = timeout_seconds
+        self.execute_requested.connect(self._run_task, Qt.QueuedConnection)
+
+    def submit(self, callback: Callable[[], object]) -> object:
+        """后台线程会阻塞等待，直到主线程执行完成并返回结果。"""
+        if threading.current_thread() is threading.main_thread():
+            return callback()
+
+        task = _MainThreadTask(callback)
+        self.execute_requested.emit(task)
+
+        if not task.done.wait(self._timeout_seconds):
+            raise TimeoutError(f"主线程测量任务超时，等待超过 {self._timeout_seconds:.1f} 秒")
+
+        if task.error is not None:
+            raise task.error
+
+        return task.result
+
+    @Slot(object)
+    def _run_task(self, task: _MainThreadTask) -> None:
+        try:
+            task.result = task.callback()
+        except Exception as exc:
+            task.error = exc
+        finally:
+            task.done.set()
 
 
 class MainWindow(QMainWindow):
@@ -70,7 +121,9 @@ class MainWindow(QMainWindow):
         self.logger = get_logger("ui")
         # controller 负责在 UI、业务层、日志和阶段 0 基础设施之间做调度。
         self.controller = MeasurementController()
+        self._main_thread_executor = _MainThreadExecutor(ROBOT_MAIN_THREAD_TASK_TIMEOUT, self)
         self.controller.set_log_callback(self._append_log)
+        self.controller.set_main_thread_executor(self._main_thread_executor.submit)
         # 为了尽量少改动现有 UI 逻辑，这里保留一个连接器别名。
         self.connector = self.controller.connector
         # 这里保存“三平面交点”功能加载得到的 9 个点。
@@ -103,6 +156,8 @@ class MainWindow(QMainWindow):
         self.tabs.addTab(self._build_line_tab(), '两面交线')
         self.robot_link_tab = RobotLinkTab(self.controller)
         self.tabs.addTab(self.robot_link_tab, '机器人联动')
+        self.calibration_tab = CalibrationTab(self.controller)
+        self.tabs.addTab(self.calibration_tab, '标定与变换')
         root_layout.addWidget(self.tabs)
 
         root_layout.addWidget(self._build_log_group())
@@ -111,6 +166,8 @@ class MainWindow(QMainWindow):
         self._log('程序启动完成')
         if not HAS_COM:
             self._log('警告: 未检测到 comtypes，请先运行 pip install comtypes')
+        if not HAS_NUMPY:
+            self._log('警告: 未检测到 numpy，标定与变换功能暂不可用')
         self._update_action_buttons()
 
         self._log_timer = QTimer(self)

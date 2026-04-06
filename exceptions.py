@@ -19,6 +19,18 @@ class MeasurementError(AppError):
     """测量流程错误。"""
 
 
+class TransformError(AppError):
+    """坐标变换相关错误。"""
+
+
+class CalibrationError(AppError):
+    """标定求解相关错误。"""
+
+
+class RepositoryError(AppError):
+    """本地存储读写相关错误。"""
+
+
 class ProtocolError(AppError):
     """协议或消息格式错误。"""
 
