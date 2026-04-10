@@ -1,4 +1,4 @@
-"""机器人联动页面。"""
+﻿"""机器人联动页面。"""
 
 from __future__ import annotations
 
@@ -17,9 +17,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from config import ROBOT_UI_POLL_INTERVAL_MS
-from exceptions import AppError
-from measurement_controller import MeasurementController
+from polyworks_robot_arm.common.config import ROBOT_UI_POLL_INTERVAL_MS
+from polyworks_robot_arm.common.exceptions import AppError
+from polyworks_robot_arm.controllers.measurement_controller import MeasurementController
 
 
 class RobotLinkTab(QWidget):
@@ -84,7 +84,7 @@ class RobotLinkTab(QWidget):
                 "激活变换",
                 "REQ",
                 "任务",
-                "坐标系",
+                "客户端坐标系",
                 "会话状态",
                 "目标点数",
                 "已收点数",
@@ -180,7 +180,7 @@ class RobotLinkTab(QWidget):
         else:
             self.status_labels["REQ"].setText(str(session["req"]))
             self.status_labels["任务"].setText(str(session["task"]))
-            self.status_labels["坐标系"].setText(str(session["frame"]))
+            self.status_labels["客户端坐标系"].setText(str(session["frame"]))
             self.status_labels["会话状态"].setText(str(session["state"]))
             self.status_labels["目标点数"].setText(str(session["expected_points"]))
             self.status_labels["已收点数"].setText(str(session["received_points"]))
@@ -205,7 +205,7 @@ class RobotLinkTab(QWidget):
     def _fill_empty_session(self) -> None:
         self.status_labels["REQ"].setText("--")
         self.status_labels["任务"].setText("--")
-        self.status_labels["坐标系"].setText("--")
+        self.status_labels["客户端坐标系"].setText("--")
         self.status_labels["会话状态"].setText("--")
         self.status_labels["目标点数"].setText("--")
         self.status_labels["已收点数"].setText("--")
@@ -261,3 +261,5 @@ class RobotLinkTab(QWidget):
         if code and message:
             return f"{code}: {message}"
         return code or message or "--"
+
+

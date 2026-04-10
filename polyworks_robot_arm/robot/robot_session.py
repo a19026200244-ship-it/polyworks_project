@@ -1,11 +1,11 @@
-"""机器人联动会话对象。"""
+﻿"""机器人联动会话对象。"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from exceptions import SessionStateError
+from polyworks_robot_arm.common.exceptions import SessionStateError
 
 Point3D = tuple[float, float, float]
 
@@ -165,3 +165,4 @@ class RobotSession:
             "last_error_message": self.last_error_message,
             "last_result": self.last_result,
         }
+

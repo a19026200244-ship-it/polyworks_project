@@ -1,4 +1,4 @@
-"""应用日志工具。
+﻿"""应用日志工具。
 
 这个模块负责两件事：
 1. 配置统一的文件日志
@@ -11,7 +11,12 @@ import logging
 import sys
 from logging.handlers import RotatingFileHandler
 
-from config import LOG_BACKUP_COUNT, LOG_DIR, LOG_FILE, LOG_MAX_BYTES
+from polyworks_robot_arm.common.config import (
+    LOG_BACKUP_COUNT,
+    LOG_DIR,
+    LOG_FILE,
+    LOG_MAX_BYTES,
+)
 
 APP_LOGGER_NAME = "polyworks_robot_arm"
 
@@ -75,3 +80,4 @@ def install_global_excepthook(logger: logging.Logger | None = None) -> None:
         )
 
     sys.excepthook = _handle_exception
+

@@ -1,3 +1,6 @@
+﻿> 目录已重构：当前源码集中存放在 `polyworks_robot_arm/` 包目录下。  
+> 结构说明见 [`docs/PROJECT_STRUCTURE.md`](docs/PROJECT_STRUCTURE.md)。  
+> 启动方式保持不变：`python main.py`、`python robot_simulator.py`
 # PolyWorks 机械臂测量接口
 
 <div align="center">
@@ -252,3 +255,4 @@ D:/pw_get_point.pwmacro
 ## 致谢
 
 感谢 PolyWorks 提供成熟的工业测量与几何构造能力，这个项目在 Python 端主要承担流程组织、数据交互和结果展示的角色。
+

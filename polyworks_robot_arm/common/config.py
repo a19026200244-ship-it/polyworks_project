@@ -13,7 +13,7 @@ from pathlib import Path
 # 项目根目录。
 # 后面日志、数据库、示例文件等路径都尽量基于它来拼接，
 # 这样项目移动到别的电脑后更容易保持一致。
-APP_BASE_DIR = Path(__file__).resolve().parent
+APP_BASE_DIR = Path(__file__).resolve().parents[2]
 
 # 运行期目录配置。
 LOG_DIR = APP_BASE_DIR / "logs"
@@ -25,6 +25,8 @@ LOG_BACKUP_COUNT = 3
 DATA_DIR = APP_BASE_DIR / "runtime_data"
 DATABASE_FILE = DATA_DIR / "measurements.sqlite3"
 TRANSFORM_REPOSITORY_FILE = DATA_DIR / "transforms.json"
+SAMPLE_DATA_DIR = APP_BASE_DIR / "数据文件"
+POLYWORKS_INTERMEDIATE_DIR = DATA_DIR / "polyworks_intermediate"
 
 # 机器人联动相关配置。
 # 阶段 1 先只支持：
@@ -84,17 +86,15 @@ POINT_GROUP_COLORS = {
 }
 
 # PolyWorks 导出过程中会临时用到的文件。
-# Python 会生成宏文件让 PolyWorks 执行，
-# 再把结果暂存到文本文件里读回。
-#
-# 注意：这里是“默认模板路径”。
+# 现在统一收口到 runtime_data/polyworks_intermediate/ 目录下，
+# 这样后续排查宏内容和结果文件时更方便。
 # 实际运行时，services.py 会继续在文件名里加时间戳，
-# 生成真正的一次性临时文件，避免多次运行时重名。
-RESULT_FILE = Path("D:/polyworks_temp_result.txt")
-TEMP_MACRO_FILE = Path("D:/pw_get_point.pwmacro")
+# 生成真正的一次性文件，避免多次运行时重名。
+RESULT_FILE = POLYWORKS_INTERMEDIATE_DIR / "polyworks_result.txt"
+TEMP_MACRO_FILE = POLYWORKS_INTERMEDIATE_DIR / "polyworks_macro.pwmacro"
 
-# PolyWorks 中创建对象时统一使用的名称。
-# 集中写在这里，后面如果要改命名规则，不用全项目到处找。
+# PolyWorks 中创建对象时统一使用的基础名称。
+# 三平面交点现在会在这些名字后面再拼上时间戳，避免和旧对象冲突。
 POINT_NAME_TEMPLATE = "点 {index}"
 PLANE_NAMES = ["平面 1", "平面 2", "平面 3"]
 INTERSECTION_POINT_NAME = "点 10"

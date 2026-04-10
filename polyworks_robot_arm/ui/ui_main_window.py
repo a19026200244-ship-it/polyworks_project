@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QTabWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -38,9 +39,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app_logger import get_logger
-from calibration_service import HAS_NUMPY
-from config import (
+from polyworks_robot_arm.calibration.calibration_service import HAS_NUMPY
+from polyworks_robot_arm.common.app_logger import get_logger
+from polyworks_robot_arm.common.config import (
     EXPECTED_POINT_COUNT,
     POINT_GROUP_COLORS,
     POINT_GROUPS,
@@ -49,13 +50,13 @@ from config import (
     WINDOW_MIN_WIDTH,
     WINDOW_TITLE,
 )
-from data_parser import parse_points_file, parse_points_text
-from exceptions import AppError
-from measurement_controller import MeasurementController
-from polyworks_com import HAS_COM
-from services import validate_points
-from ui_calibration_tab import CalibrationTab
-from ui_robot_link_tab import RobotLinkTab
+from polyworks_robot_arm.common.data_parser import parse_points_file, parse_points_text
+from polyworks_robot_arm.common.exceptions import AppError
+from polyworks_robot_arm.controllers.measurement_controller import MeasurementController
+from polyworks_robot_arm.integrations.polyworks_com import HAS_COM
+from polyworks_robot_arm.measurement.services import validate_points
+from polyworks_robot_arm.ui.ui_calibration_tab import CalibrationTab
+from polyworks_robot_arm.ui.ui_robot_link_tab import RobotLinkTab
 
 # 这个文件适合从“用户操作流程”的角度去理解：
 # 用户点按钮 -> 对应的 `_on_xxx()` 被触发 -> 调用业务层 -> 更新界面结果。
@@ -151,14 +152,14 @@ class MainWindow(QMainWindow):
 
         # 三个标签页分别承载三个不同的测量功能。
         self.tabs = QTabWidget()
-        self.tabs.addTab(self._build_intersection_tab(), '三平面交点')
-        self.tabs.addTab(self._build_circle_tab(), '拟合圆')
-        self.tabs.addTab(self._build_line_tab(), '两面交线')
+        self.tabs.addTab(self._wrap_tab_with_scroll(self._build_intersection_tab()), '三平面交点')
+        self.tabs.addTab(self._wrap_tab_with_scroll(self._build_circle_tab()), '拟合圆')
+        self.tabs.addTab(self._wrap_tab_with_scroll(self._build_line_tab()), '两面交线')
         self.robot_link_tab = RobotLinkTab(self.controller)
-        self.tabs.addTab(self.robot_link_tab, '机器人联动')
+        self.tabs.addTab(self._wrap_tab_with_scroll(self.robot_link_tab), '机器人联动')
         self.calibration_tab = CalibrationTab(self.controller)
-        self.tabs.addTab(self.calibration_tab, '标定与变换')
-        root_layout.addWidget(self.tabs)
+        self.tabs.addTab(self._wrap_tab_with_scroll(self.calibration_tab), '标定与变换')
+        root_layout.addWidget(self.tabs, 1)
 
         root_layout.addWidget(self._build_log_group())
 
@@ -173,6 +174,20 @@ class MainWindow(QMainWindow):
         self._log_timer = QTimer(self)
         self._log_timer.timeout.connect(self._flush_controller_logs)
         self._log_timer.start(300)
+
+    def _wrap_tab_with_scroll(self, page: QWidget) -> QScrollArea:
+        """给标签页外层包一层滚动区域。
+
+        这样页面内容过长时，用户就可以直接滚动查看，
+        不会因为窗口高度不够而把控件全部挤在一起。
+        """
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QFrame.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setWidget(page)
+        return scroll_area
 
     def _build_connection_group(self) -> QGroupBox:
         """创建 PolyWorks 连接区域。"""
@@ -654,4 +669,7 @@ class MainWindow(QMainWindow):
         # Qt 在窗口关闭时会自动调用这个函数。
         self.controller.shutdown()
         super().closeEvent(event)
+
+
+
 

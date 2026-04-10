@@ -1,12 +1,12 @@
-"""机器人 TCP 服务端。"""
+﻿"""机器人 TCP 服务端。"""
 
 from __future__ import annotations
 
 import socketserver
 import threading
 
-from config import ROBOT_SERVER_ENCODING
-from robot_protocol import build_error
+from polyworks_robot_arm.common.config import ROBOT_SERVER_ENCODING
+from polyworks_robot_arm.robot.robot_protocol import build_error
 
 
 class RobotTCPServer(socketserver.ThreadingTCPServer):
@@ -79,3 +79,4 @@ class RobotRequestHandler(socketserver.StreamRequestHandler):
         """按行回写响应。"""
         for line in lines:
             self.wfile.write(f"{line}\n".encode(ROBOT_SERVER_ENCODING))
+

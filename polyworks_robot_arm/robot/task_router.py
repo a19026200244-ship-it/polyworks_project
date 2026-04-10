@@ -1,4 +1,4 @@
-"""多任务路由辅助模块。
+﻿"""多任务路由辅助模块。
 
 这个模块把“不同 TASK 的协议规则、点分组规则、结果格式规则”
 集中到一起，避免这些分支判断全部堆到 controller 里。
@@ -9,16 +9,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Callable
 
-from config import EXPECTED_POINT_COUNT, MIN_POINTS_FOR_CIRCLE, MIN_POINTS_FOR_PLANE
-from exceptions import ProtocolError
-from result_types import CircleFitResult, LineResult
-from robot_protocol import (
+from polyworks_robot_arm.common.config import (
+    EXPECTED_POINT_COUNT,
+    MIN_POINTS_FOR_CIRCLE,
+    MIN_POINTS_FOR_PLANE,
+)
+from polyworks_robot_arm.common.exceptions import ProtocolError
+from polyworks_robot_arm.common.result_types import CircleFitResult, LineResult
+from polyworks_robot_arm.robot.robot_protocol import (
     RobotMessage,
     build_circle_result,
     build_intersection3p_result,
     build_line_result,
 )
-from robot_session import RobotSession
+from polyworks_robot_arm.robot.robot_session import RobotSession
 
 Point3D = tuple[float, float, float]
 TaskExecutionResult = CircleFitResult | LineResult | Point3D
@@ -133,24 +137,37 @@ def execute_task(
     run_line: Callable[[list[Point3D], list[Point3D]], LineResult],
     run_intersection3p: Callable[[list[Point3D]], Point3D],
 ) -> TaskExecutionResult:
-    """根据任务类型把点路由到不同测量流程。"""
-    grouped_points = session.get_grouped_point_tuples()
+    """根据任务类型把会话里的点路由到不同测量流程。"""
+    return execute_task_from_grouped_points(
+        session.task,
+        session.get_grouped_point_tuples(),
+        run_circle,
+        run_line,
+        run_intersection3p,
+    )
 
-    if session.task == "CIRCLE":
+
+def execute_task_from_grouped_points(
+    task: str,
+    grouped_points: dict[str, list[Point3D]],
+    run_circle: Callable[[list[Point3D]], CircleFitResult],
+    run_line: Callable[[list[Point3D], list[Point3D]], LineResult],
+    run_intersection3p: Callable[[list[Point3D]], Point3D],
+) -> TaskExecutionResult:
+    """根据任务类型把一组已准备好的点送入测量流程。"""
+    normalized_task = task.upper()
+
+    if normalized_task == "CIRCLE":
         return run_circle(grouped_points[CIRCLE_GROUP])
 
-    if session.task == "LINE":
+    if normalized_task == "LINE":
         return run_line(grouped_points["P1"], grouped_points["P2"])
 
-    if session.task == "INTERSECTION3P":
-        points = (
-            grouped_points["P1"]
-            + grouped_points["P2"]
-            + grouped_points["P3"]
-        )
+    if normalized_task == "INTERSECTION3P":
+        points = grouped_points["P1"] + grouped_points["P2"] + grouped_points["P3"]
         return run_intersection3p(points)
 
-    raise ProtocolError(f"当前不支持的任务类型: {session.task}")
+    raise ProtocolError(f"当前不支持的任务类型: {task}")
 
 
 def build_result_message(req: str, session: RobotSession, result: TaskExecutionResult) -> str:

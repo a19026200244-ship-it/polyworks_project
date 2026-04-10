@@ -1,4 +1,4 @@
-"""标定与变换页面。"""
+﻿"""标定与变换页面。"""
 
 from __future__ import annotations
 
@@ -20,12 +20,20 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from calibration_service import HAS_NUMPY
-from config import PW_FRAME_NAME, ROBOT_BASE_FRAME_NAME
-from data_parser import parse_points_file
-from exceptions import AppError
-from measurement_controller import MeasurementController
-from transform_models import CalibrationSolveResult, Point3D
+from polyworks_robot_arm.calibration.calibration_service import HAS_NUMPY
+from polyworks_robot_arm.calibration.transform_models import CalibrationSolveResult, Point3D
+from polyworks_robot_arm.common.config import PW_FRAME_NAME, ROBOT_BASE_FRAME_NAME
+from polyworks_robot_arm.common.data_parser import parse_points_file
+from polyworks_robot_arm.common.exceptions import AppError
+from polyworks_robot_arm.controllers.measurement_controller import MeasurementController
+
+# 这个页面是 Stage 3 的“人工操作入口”。
+# 你可以把它理解成一条很直的流程:
+# 1. 读入两组对应点
+# 2. 在界面上按索引自动配对
+# 3. 点击求解得到刚体变换
+# 4. 查看误差
+# 5. 保存并设为当前生效变换
 
 
 class CalibrationTab(QWidget):
@@ -34,13 +42,16 @@ class CalibrationTab(QWidget):
     def __init__(self, controller: MeasurementController) -> None:
         super().__init__()
         self.controller = controller
+        # 这两个列表分别缓存“从文件加载进来的两组点”。
         self.pw_points: list[Point3D] = []
         self.robot_points: list[Point3D] = []
+        # latest_result 保存最近一次求解结果，供“保存变换”按钮复用。
         self.latest_result: CalibrationSolveResult | None = None
         self._init_ui()
         self.refresh_repository_view()
 
     def _init_ui(self) -> None:
+        # 页面布局顺序基本就是推荐的人工使用顺序。
         root_layout = QVBoxLayout(self)
         root_layout.setSpacing(10)
 
@@ -199,6 +210,7 @@ class CalibrationTab(QWidget):
         return labels
 
     def _on_load_pw_points(self) -> None:
+        # 重新加载数据后，旧的求解结果已经不再可信，所以要清空 latest_result。
         self.pw_points = self._load_points_from_file("选择 PolyWorks 点文件")
         self._fill_point_table(self.tbl_pw_points, self.pw_points)
         self.lbl_pw_count.setText(f"点数: {len(self.pw_points)}")
@@ -207,6 +219,7 @@ class CalibrationTab(QWidget):
         self._update_pair_table()
 
     def _on_load_robot_points(self) -> None:
+        # 机器人点的处理逻辑和 PW 点是对称的。
         self.robot_points = self._load_points_from_file("选择机器人点文件")
         self._fill_point_table(self.tbl_robot_points, self.robot_points)
         self.lbl_robot_count.setText(f"点数: {len(self.robot_points)}")
@@ -215,6 +228,7 @@ class CalibrationTab(QWidget):
         self._update_pair_table()
 
     def _on_solve(self) -> None:
+        # UI 层先做最基础的前置校验，避免把明显错误的数据送进算法层。
         if not HAS_NUMPY:
             QMessageBox.warning(self, "缺少依赖", "未检测到 numpy，无法进行标定求解")
             return
@@ -228,6 +242,7 @@ class CalibrationTab(QWidget):
             return
 
         transform_name = self.edit_transform_name.text().strip()
+        # 真正的标定算法不在 UI 里，而是交给 controller 统一调度。
         try:
             result = self.controller.solve_point_pair_calibration(
                 self.pw_points,
@@ -241,6 +256,7 @@ class CalibrationTab(QWidget):
             return
 
         self.latest_result = result
+        # 只有成功求解后，保存按钮才允许点击。
         self.btn_save_transform.setEnabled(True)
         self._fill_result_summary(result)
         self._update_pair_table(result)
@@ -252,6 +268,7 @@ class CalibrationTab(QWidget):
             return
 
         try:
+            # 保存时顺手设为 active，后续机器人结果回传就能直接套用它。
             self.controller.save_transform(self.latest_result.transform, set_active=True)
         except AppError as exc:
             QMessageBox.critical(self, "保存失败", str(exc))
@@ -267,6 +284,8 @@ class CalibrationTab(QWidget):
             return
 
         try:
+            # “加载并设为当前”代表告诉 controller:
+            # 之后如果机器人请求 ROBOT_BASE 坐标，就优先用这个变换回传。
             transform = self.controller.load_transform(transform_name, set_active=True)
         except AppError as exc:
             QMessageBox.critical(self, "加载失败", str(exc))
@@ -278,6 +297,7 @@ class CalibrationTab(QWidget):
     def refresh_repository_view(self) -> None:
         """刷新保存库和当前激活变换显示。"""
         try:
+            # 页面不直接碰仓库，而是统一通过 controller 获取快照。
             snapshot = self.controller.get_calibration_ui_snapshot()
         except AppError as exc:
             QMessageBox.critical(self, "读取失败", str(exc))
@@ -319,6 +339,7 @@ class CalibrationTab(QWidget):
     def _update_pair_table(self, result: CalibrationSolveResult | None = None) -> None:
         residual_map = {}
         if result is not None:
+            # 按 label 建索引，方便逐行显示每一对点的误差。
             residual_map = {item.label: item for item in result.residuals}
 
         pair_count = max(len(self.pw_points), len(self.robot_points))
@@ -326,6 +347,8 @@ class CalibrationTab(QWidget):
 
         for row in range(pair_count):
             label = f"P{row + 1}"
+            # 当前版本的配对规则很简单: 按索引一一对应。
+            # 所以文件里第 1 行 PW 点默认配第 1 行 ROBOT 点。
             pw_point = self.pw_points[row] if row < len(self.pw_points) else None
             robot_point = self.robot_points[row] if row < len(self.robot_points) else None
 
@@ -350,6 +373,7 @@ class CalibrationTab(QWidget):
                 f"当前两组点数量不一致：PW={len(self.pw_points)}，ROBOT={len(self.robot_points)}"
             )
         else:
+            # 明确告诉用户现在采用的是“按索引自动配对”。
             self.lbl_pair_status.setText(f"当前按索引自动配对，共 {len(self.pw_points)} 对点")
 
     def _fill_result_summary(self, result: CalibrationSolveResult) -> None:
@@ -364,6 +388,7 @@ class CalibrationTab(QWidget):
             f"目标坐标系: {transform.target_frame}",
             "旋转矩阵 R:",
         ]
+        # 这里把 R/T 明文显示出来，是为了让数学结果和界面结果能对上。
         for row in transform.rotation:
             matrix_lines.append(
                 f"[ {row[0]: .6f}, {row[1]: .6f}, {row[2]: .6f} ]"
@@ -380,6 +405,8 @@ class CalibrationTab(QWidget):
             self.active_transform_text.setPlainText("--")
             return
 
+        # active transform 是“当前默认生效”的变换。
+        # 机器人联动页请求 ROBOT_BASE 结果时，controller 会优先使用它。
         self.lbl_active_transform.setText(
             "当前激活变换: "
             f"{transform_snapshot['name']} ({transform_snapshot['source_frame']} -> {transform_snapshot['target_frame']})"
@@ -403,3 +430,4 @@ class CalibrationTab(QWidget):
     @staticmethod
     def _fmt_value(value: float | None) -> str:
         return "--" if value is None else f"{value:.6f}"
+

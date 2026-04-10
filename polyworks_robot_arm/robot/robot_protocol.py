@@ -1,10 +1,11 @@
-"""机器人联动协议定义。
+﻿"""机器人联动协议定义。
 
-阶段 2 协议约定：
+阶段 3 协议约定：
 1. 一行一条消息
 2. UTF-8 编码
 3. 消息格式为 `TYPE;KEY=VALUE;KEY=VALUE`
-4. 当前支持任务：
+4. START 里的 FRAME 表示客户端发送点和接收结果所使用的坐标系
+5. 当前支持任务：
    - CIRCLE
    - LINE
    - INTERSECTION3P
@@ -14,8 +15,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from exceptions import ProtocolError
-from result_types import CircleFitResult, LineResult
+from polyworks_robot_arm.common.exceptions import ProtocolError
+from polyworks_robot_arm.common.result_types import CircleFitResult, LineResult
 
 Point3D = tuple[float, float, float]
 
@@ -238,3 +239,6 @@ def _parse_optional_int(message: RobotMessage, key: str, default: int) -> int:
         return int(value)
     except ValueError as exc:
         raise ProtocolError(f"字段 {key} 不是有效整数: {value}") from exc
+
+
+
