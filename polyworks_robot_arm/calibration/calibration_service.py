@@ -130,5 +130,3 @@ class CalibrationService:
 def _to_point(values) -> Point3D:
     """把 numpy 向量转成三维点。"""
     return float(values[0]), float(values[1]), float(values[2])
-
-

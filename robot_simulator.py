@@ -8,4 +8,5 @@ from polyworks_robot_arm.robot.robot_simulator import main
 
 
 if __name__ == "__main__":
+    
     main()
